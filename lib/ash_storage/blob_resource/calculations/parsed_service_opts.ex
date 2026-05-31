@@ -13,7 +13,7 @@ defmodule AshStorage.BlobResource.Calculations.ParsedServiceOpts do
       service_mod = record.service_name
       stored_opts = record.service_opts || %{}
 
-      if function_exported?(service_mod, :service_opts_fields, 0) do
+      if Code.ensure_loaded?(service_mod) and function_exported?(service_mod, :service_opts_fields, 0) do
         fields = service_mod.service_opts_fields()
 
         case Ash.Type.cast_stored(Ash.Type.Keyword, stored_opts, fields: fields) do
