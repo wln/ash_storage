@@ -4,6 +4,7 @@ defmodule AshStorage.AttachmentDefinition do
     :name,
     :type,
     :service,
+    :layer_definitions,
     :dependent,
     :sort,
     :__spark_metadata__,
@@ -35,6 +36,12 @@ defmodule AshStorage.AttachmentDefinition do
   def normalize_analyzers(analyzer_defs) do
     Enum.map(analyzer_defs, &AshStorage.AnalyzerDefinition.normalize/1)
   end
+
+  @doc false
+  # Returns the storage key for a new blob. Keys are randomly generated. The
+  # BlobContext and caller source are accepted (and currently unused) so key
+  # derivation can become context-aware here without changing call sites.
+  def storage_key(%__MODULE__{}, _bctx, _source), do: {:ok, AshStorage.generate_key()}
 
   def has_one_schema, do: @shared_schema
 
