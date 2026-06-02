@@ -27,35 +27,21 @@ defmodule AshStorage.Service.Disk do
     ]
   end
 
-  # sobelow_skip ["Traversal.FileModule"]
   @impl true
   def upload(key, io, %AshStorage.Service.Context{} = ctx) do
     root = Keyword.fetch!(ctx.service_opts, :root)
-    path = Path.join(root, key)
 
-    path |> Path.dirname() |> File.mkdir_p!()
-
-    case io do
-      %File.Stream{} = stream ->
-        stream
-        |> Stream.into(File.stream!(path))
-        |> Stream.run()
-
-      data when is_binary(data) ->
-        File.write(path, data)
-
-      data when is_list(data) ->
-        File.write(path, data)
+    with {:ok, path} <- safe_path(root, key) do
+      write_io(path, io)
     end
   end
 
-  # sobelow_skip ["Traversal.FileModule"]
   @impl true
   def download(key, %AshStorage.Service.Context{} = ctx) do
     root = Keyword.fetch!(ctx.service_opts, :root)
-    path = Path.join(root, key)
 
-    with {:ok, data} <- File.read(path),
+    with {:ok, path} <- safe_path(root, key),
+         {:ok, data} <- read_file(path),
          :ok <- verify_md5(data, ctx.expected_md5) do
       {:ok, data}
     else
@@ -64,35 +50,35 @@ defmodule AshStorage.Service.Disk do
     end
   end
 
-  # sobelow_skip ["Traversal.FileModule"]
   @impl true
   def delete(key, %AshStorage.Service.Context{} = ctx) do
     root = Keyword.fetch!(ctx.service_opts, :root)
-    path = Path.join(root, key)
 
-    case File.rm(path) do
-      :ok -> :ok
-      {:error, :enoent} -> :ok
-      {:error, reason} -> {:error, reason}
+    with {:ok, path} <- safe_path(root, key) do
+      case remove_file(path) do
+        :ok -> :ok
+        {:error, :enoent} -> :ok
+        {:error, reason} -> {:error, reason}
+      end
     end
   end
 
-  # sobelow_skip ["Traversal.FileModule"]
   @impl true
   def exists?(key, %AshStorage.Service.Context{} = ctx) do
     root = Keyword.fetch!(ctx.service_opts, :root)
-    path = Path.join(root, key)
-    {:ok, File.exists?(path)}
+
+    with {:ok, path} <- safe_path(root, key) do
+      {:ok, file_exists?(path)}
+    end
   end
 
-  # sobelow_skip ["Traversal.FileModule"]
   @impl true
   def head(key, %AshStorage.Service.Context{} = ctx) do
     root = Keyword.fetch!(ctx.service_opts, :root)
-    path = Path.join(root, key)
 
-    with {:ok, %File.Stat{size: size}} <- File.stat(path),
-         {:ok, data} <- File.read(path) do
+    with {:ok, path} <- safe_path(root, key),
+         {:ok, %File.Stat{size: size}} <- stat_file(path),
+         {:ok, data} <- read_file(path) do
       {:ok, %{etag: nil, content_md5: Base.encode64(:erlang.md5(data)), byte_size: size}}
     else
       {:error, :enoent} -> {:error, :not_found}
@@ -142,6 +128,45 @@ defmodule AshStorage.Service.Disk do
        }
      }}
   end
+
+  # Storage keys arrive from untrusted callers (e.g. a public proxy route).
+  # `Path.join/2` does NOT collapse `..`, so resolve the key to a guaranteed-safe
+  # relative path before any filesystem access. `Path.safe_relative/1` rejects
+  # absolute paths and any `..` that would escape, so the join stays under `root`.
+  defp safe_path(root, key) do
+    case Path.safe_relative(to_string(key)) do
+      {:ok, relative} -> {:ok, Path.join(root, relative)}
+      :error -> {:error, {:unsafe_storage_key, key}}
+    end
+  end
+
+  # File operations are isolated behind safe_path/2 above; the path can no longer
+  # be steered outside `root`, which is what these sobelow skips assert.
+  # sobelow_skip ["Traversal.FileModule"]
+  defp write_io(path, io) do
+    path |> Path.dirname() |> File.mkdir_p!()
+
+    case io do
+      %File.Stream{} = stream ->
+        stream |> Stream.into(File.stream!(path)) |> Stream.run()
+        :ok
+
+      data when is_binary(data) or is_list(data) ->
+        File.write(path, data)
+    end
+  end
+
+  # sobelow_skip ["Traversal.FileModule"]
+  defp read_file(path), do: File.read(path)
+
+  # sobelow_skip ["Traversal.FileModule"]
+  defp remove_file(path), do: File.rm(path)
+
+  # sobelow_skip ["Traversal.FileModule"]
+  defp file_exists?(path), do: File.exists?(path)
+
+  # sobelow_skip ["Traversal.FileModule"]
+  defp stat_file(path), do: File.stat(path)
 
   defp maybe_put(keyword, _key, nil), do: keyword
   defp maybe_put(keyword, key, value), do: Keyword.put(keyword, key, value)
