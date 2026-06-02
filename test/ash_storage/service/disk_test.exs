@@ -36,6 +36,25 @@ defmodule AshStorage.Service.DiskTest do
     end
   end
 
+  describe "path traversal" do
+    test "rejects keys that escape the root on every op", %{ctx: ctx, root: root} do
+      # Plant a sentinel just outside the root that a traversal would try to reach.
+      outside = Path.join(Path.dirname(root), "escaped_secret.txt")
+      File.write!(outside, "TOP SECRET")
+      on_exit(fn -> File.rm_rf!(outside) end)
+
+      for key <- ["../escaped_secret.txt", "../../etc/passwd", "a/../../escaped_secret.txt",
+                  "/etc/passwd"] do
+        assert {:error, {:unsafe_storage_key, ^key}} = Disk.download(key, ctx)
+        assert {:error, {:unsafe_storage_key, ^key}} = Disk.upload(key, "x", ctx)
+        assert {:error, {:unsafe_storage_key, ^key}} = Disk.delete(key, ctx)
+      end
+
+      # The traversing uploads never escaped the root.
+      assert File.read!(outside) == "TOP SECRET"
+    end
+  end
+
   describe "download/2" do
     test "downloads an existing file", %{ctx: ctx, root: root} do
       File.write!(Path.join(root, "test.txt"), "hello")
