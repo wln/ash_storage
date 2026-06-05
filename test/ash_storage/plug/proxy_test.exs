@@ -339,5 +339,151 @@ defmodule AshStorage.Plug.ProxyTest do
         )
       end
     end
+
+    test "rejects signed URLs whose remaining lifetime exceeds :max_lifetime_seconds" do
+      ctx = Service.Context.new([])
+      Service.Test.upload("secret.txt", "secret data", ctx)
+
+      # 1-hour token presented against a 5-minute cap → rejected.
+      expires = System.system_time(:second) + 3600
+      token = AshStorage.Token.sign(@secret, "secret.txt", expires)
+
+      plug_opts =
+        Proxy.init(
+          service: {Service.Test, []},
+          access: {:signed, secret: @secret},
+          max_lifetime_seconds: 300
+        )
+
+      conn =
+        conn(:get, "/secret.txt?token=#{URI.encode_www_form(token)}&expires=#{expires}")
+        |> Plug.Conn.fetch_query_params()
+        |> Proxy.call(plug_opts)
+
+      assert conn.status == 403
+    end
+
+    test "accepts signed URLs whose remaining lifetime is within :max_lifetime_seconds" do
+      ctx = Service.Context.new([])
+      Service.Test.upload("secret.txt", "secret data", ctx)
+
+      # Token expires in 60 s, cap is 300 s → accepted.
+      expires = System.system_time(:second) + 60
+      token = AshStorage.Token.sign(@secret, "secret.txt", expires)
+
+      plug_opts =
+        Proxy.init(
+          service: {Service.Test, []},
+          access: {:signed, secret: @secret},
+          max_lifetime_seconds: 300
+        )
+
+      conn =
+        conn(:get, "/secret.txt?token=#{URI.encode_www_form(token)}&expires=#{expires}")
+        |> Plug.Conn.fetch_query_params()
+        |> Proxy.call(plug_opts)
+
+      assert conn.status == 200
+      assert conn.resp_body == "secret data"
+    end
+
+    test "rejects :max_lifetime_seconds with a non-positive value" do
+      assert_raise ArgumentError, ~r/:max_lifetime_seconds must be a positive integer/, fn ->
+        Proxy.init(
+          service: {Service.Test, []},
+          max_lifetime_seconds: 0
+        )
+      end
+
+      assert_raise ArgumentError, ~r/:max_lifetime_seconds must be a positive integer/, fn ->
+        Proxy.init(
+          service: {Service.Test, []},
+          max_lifetime_seconds: "300"
+        )
+      end
+    end
+  end
+
+  describe ":actor_assign" do
+    defmodule ActorEchoLayer do
+      # A test-only layer that emits the actor it saw in bctx into the
+      # response body. Lets the test assert "yes the proxy threaded an
+      # actor through" without depending on any encryption machinery.
+      @behaviour AshStorage.Layer
+
+      @impl true
+      def default_metadata_key(_opts), do: "actor-echo"
+
+      @impl true
+      def read(read, _opts) do
+        actor = read.blob_context && read.blob_context.actor
+        {:ok, %{read | data: read.data <> "|actor=#{inspect(actor)}"}}
+      end
+    end
+
+    test "threads conn.assigns[:current_user] into BlobContext.actor when configured" do
+      ctx = Service.Context.new([])
+      Service.Test.upload("doc.txt", "body", ctx)
+
+      plug_opts =
+        Proxy.init(
+          service: {Service.Test, []},
+          layers: [ActorEchoLayer],
+          actor_assign: :current_user
+        )
+
+      conn =
+        conn(:get, "/doc.txt")
+        |> Plug.Conn.assign(:current_user, %{id: "u-1"})
+        |> Proxy.call(plug_opts)
+
+      assert conn.status == 200
+      assert conn.resp_body =~ ~s|actor=%{id: "u-1"}|
+    end
+
+    test "accepts a 1-arity function and uses its return as the actor" do
+      ctx = Service.Context.new([])
+      Service.Test.upload("doc.txt", "body", ctx)
+
+      plug_opts =
+        Proxy.init(
+          service: {Service.Test, []},
+          layers: [ActorEchoLayer],
+          actor_assign: fn conn -> Map.get(conn.assigns, :custom_actor) end
+        )
+
+      conn =
+        conn(:get, "/doc.txt")
+        |> Plug.Conn.assign(:custom_actor, %{id: "u-fn"})
+        |> Proxy.call(plug_opts)
+
+      assert conn.status == 200
+      assert conn.resp_body =~ ~s|actor=%{id: "u-fn"}|
+    end
+
+    test "leaves bctx.actor as nil when :actor_assign is not configured (legacy behaviour)" do
+      ctx = Service.Context.new([])
+      Service.Test.upload("doc.txt", "body", ctx)
+
+      plug_opts = Proxy.init(service: {Service.Test, []}, layers: [ActorEchoLayer])
+
+      conn =
+        conn(:get, "/doc.txt")
+        |> Plug.Conn.assign(:current_user, %{id: "ignored"})
+        |> Proxy.call(plug_opts)
+
+      assert conn.status == 200
+      assert conn.resp_body =~ "actor=nil"
+    end
+
+    test "rejects :actor_assign values that are not atom or 1-arity function" do
+      assert_raise ArgumentError, ~r/:actor_assign must be/, fn ->
+        Proxy.init(service: {Service.Test, []}, actor_assign: "current_user")
+      end
+
+      assert_raise ArgumentError, ~r/:actor_assign must be/, fn ->
+        Proxy.init(service: {Service.Test, []}, actor_assign: fn -> :no_arg end)
+      end
+    end
   end
 end
