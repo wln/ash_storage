@@ -10,7 +10,11 @@ defmodule AshStorage.Plug.Proxy do
 
   Actor-aware authorization should normally happen before a signed URL is
   minted, or in an application route that authenticates and authorizes before
-  calling BlobIO directly.
+  calling BlobIO directly. For BlobIO layers that need a principal at read
+  time (e.g. envelope-encryption key managers that wrap DEKs per actor),
+  configure `:actor_assign` so the proxy threads the conn-resolved actor
+  into the `BlobContext` it builds — see the **actor threading** section
+  below.
 
   ## Usage
 
@@ -48,6 +52,49 @@ defmodule AshStorage.Plug.Proxy do
   bare `secret:` is also accepted as signed access, but cannot be combined with
   `:access`. When neither is configured, the proxy serves publicly; declare the
   intended mode rather than relying on that default.
+
+  ## Actor threading
+
+  Set `:actor_assign` to thread the request's authenticated principal into
+  the `BlobContext` the proxy builds for the blob-aware path. Layers that
+  read `bctx.actor` (envelope-encryption key managers, actor-scoped service
+  context overrides) then run against a real principal instead of `nil`.
+
+      forward "/storage", AshStorage.Plug.Proxy,
+        resource: MyApp.Document,
+        attachment: :file,
+        access: {:signed, secret: "..."},
+        actor_assign: :current_user
+
+  `:actor_assign` accepts an atom — a `conn.assigns[atom]` lookup, the
+  common Phoenix shape — or a 1-arity function `fn conn -> actor end` for
+  custom resolution.
+
+  The proxy itself does **not** authenticate the request. Wire your existing
+  auth pipeline (`require_authenticated_user`, `Guardian.Plug.EnsureAuthenticated`,
+  etc.) ahead of `forward` in the router, then `:actor_assign` reads the
+  assigns key your pipeline populated. A leaked signed URL still grants the
+  bytes for the lifetime of the bearer if no outer auth is in place — the
+  bearer alone is not authentication.
+
+  ## Bearer lifetime cap
+
+  Set `:max_lifetime_seconds` to refuse signed URLs whose remaining lifetime
+  exceeds the cap. Useful as a defense-in-depth lid against URL builders
+  that mint long-lived tokens — even if the layer config defaults
+  `:expires_in` to one hour, the proxy refuses anything over the cap.
+
+      forward "/storage", AshStorage.Plug.Proxy,
+        resource: MyApp.Document,
+        attachment: :file,
+        access: {:signed, secret: "..."},
+        max_lifetime_seconds: 300
+
+  The cap is the *remaining* lifetime at request time (`expires - now`), not
+  the originally-minted lifetime. A token minted with a 24-hour expiry and
+  presented in its last 4 minutes passes a 300-second cap; one presented in
+  its first hour does not. Set the cap close to the smallest legitimate URL
+  lifetime in your app.
   """
 
   @behaviour Plug
@@ -66,6 +113,8 @@ defmodule AshStorage.Plug.Proxy do
     {service_mod, service_opts} = resolve_service_options(opts, blob_resource)
     layers = Keyword.get(opts, :layers, [])
     access = resolve_access(opts)
+    actor_assign = validate_actor_assign(Keyword.get(opts, :actor_assign))
+    max_lifetime_seconds = validate_max_lifetime(Keyword.get(opts, :max_lifetime_seconds))
 
     maybe_enforce_access_requirement(blob_resource, layers, opts)
 
@@ -77,8 +126,31 @@ defmodule AshStorage.Plug.Proxy do
       service_opts: service_opts,
       layers: layers,
       access: access,
+      actor_assign: actor_assign,
+      max_lifetime_seconds: max_lifetime_seconds,
       content_type_fallback: Keyword.get(opts, :content_type_fallback, "application/octet-stream")
     }
+  end
+
+  defp validate_actor_assign(nil), do: nil
+  defp validate_actor_assign(key) when is_atom(key), do: key
+  defp validate_actor_assign(fun) when is_function(fun, 1), do: fun
+
+  defp validate_actor_assign(other) do
+    raise ArgumentError,
+          "AshStorage.Plug.Proxy :actor_assign must be an atom (conn assigns key) " <>
+            "or a 1-arity function (fn conn -> actor end), got: #{inspect(other)}"
+  end
+
+  defp validate_max_lifetime(nil), do: nil
+
+  defp validate_max_lifetime(seconds) when is_integer(seconds) and seconds > 0,
+    do: seconds
+
+  defp validate_max_lifetime(other) do
+    raise ArgumentError,
+          "AshStorage.Plug.Proxy :max_lifetime_seconds must be a positive integer, " <>
+            "got: #{inspect(other)}"
   end
 
   # A blob-aware / encryption-aware route that configures no access is a
@@ -151,19 +223,23 @@ defmodule AshStorage.Plug.Proxy do
   end
 
   defp serve_key(conn, key, %{blob_resource: nil} = opts) do
-    bctx = BlobIO.BlobContext.new(operation: :serve)
+    actor = resolve_actor(conn, opts.actor_assign)
+    bctx = BlobIO.BlobContext.new(operation: :serve, actor: actor)
 
     BlobIO.read_key(key, {opts.service_mod, opts.service_opts}, bctx, layers: opts.layers)
     |> send_blob_response(conn, key, opts)
   end
 
   defp serve_key(conn, key, %{blob_resource: blob_resource} = opts) do
+    actor = resolve_actor(conn, opts.actor_assign)
+
     with {:ok, blob} <- fetch_blob(blob_resource, key),
          bctx =
            BlobIO.BlobContext.new(
              resource: opts.resource,
              attachment: opts.attachment,
              blob: blob,
+             actor: actor,
              operation: :serve
            ),
          {:ok, data} <- BlobIO.read(blob, bctx, layers: opts.layers) do
@@ -309,18 +385,20 @@ defmodule AshStorage.Plug.Proxy do
 
   defp verify_access(_conn, _key, %{access: :public}), do: :ok
 
-  defp verify_access(conn, key, %{access: {:signed, signed_opts}}) do
-    verify_signature(conn, key, signed_opts)
+  defp verify_access(conn, key, %{access: {:signed, signed_opts}} = opts) do
+    verify_signature(conn, key, signed_opts, opts.max_lifetime_seconds)
   end
 
-  defp verify_signature(conn, key, signed_opts) do
+  defp verify_signature(conn, key, signed_opts, max_lifetime_seconds) do
     secret = Keyword.fetch!(signed_opts, :secret)
     params = Plug.Conn.fetch_query_params(conn).query_params
+    now = System.system_time(:second)
 
     with token when is_binary(token) <- params["token"],
          expires when is_binary(expires) <- params["expires"],
          {expires_at, ""} <- Integer.parse(expires),
-         true <- expires_at > System.system_time(:second) do
+         true <- expires_at > now,
+         true <- within_lifetime_cap?(expires_at, now, max_lifetime_seconds) do
       expected = Token.sign(secret, key, expires_at)
 
       if Plug.Crypto.secure_compare(token, expected) do
@@ -332,6 +410,15 @@ defmodule AshStorage.Plug.Proxy do
       _ -> {:error, :forbidden}
     end
   end
+
+  defp within_lifetime_cap?(_expires_at, _now, nil), do: true
+
+  defp within_lifetime_cap?(expires_at, now, cap) when is_integer(cap),
+    do: expires_at - now <= cap
+
+  defp resolve_actor(_conn, nil), do: nil
+  defp resolve_actor(conn, key) when is_atom(key), do: Map.get(conn.assigns, key)
+  defp resolve_actor(conn, fun) when is_function(fun, 1), do: fun.(conn)
 
   defp not_found(conn), do: conn |> Plug.Conn.send_resp(404, "Not Found") |> Plug.Conn.halt()
 
