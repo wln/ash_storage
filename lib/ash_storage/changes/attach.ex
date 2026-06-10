@@ -150,7 +150,7 @@ defmodule AshStorage.Changes.Attach do
     case find_attachments(record, attachment_def, context_opts) do
       {:ok, []} -> {:ok, :noop}
       {:ok, existing} -> purge_attachments(existing, service_mod, ctx, context_opts)
-      {:error, _} = error -> error
+      {:error, error} -> {:error, error}
     end
   end
 
