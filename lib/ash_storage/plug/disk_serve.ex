@@ -48,6 +48,7 @@ defmodule AshStorage.Plug.DiskServe do
 
         conn
         |> maybe_no_store(opts)
+        |> ResponseMetadata.put_nosniff()
         |> Plug.Conn.put_resp_content_type(content_type)
         |> ResponseMetadata.put_content_disposition()
         |> Plug.Conn.send_file(200, path)
@@ -94,7 +95,7 @@ defmodule AshStorage.Plug.DiskServe do
   end
 
   defp safe_join(root, key) do
-    case Path.safe_relative(key) do
+    case Path.safe_relative(key, root) do
       {:ok, relative} -> Path.join(root, relative)
       :error -> nil
     end

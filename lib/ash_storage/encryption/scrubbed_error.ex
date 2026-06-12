@@ -31,6 +31,30 @@ defmodule AshStorage.Encryption.ScrubbedError do
 
   def scrub(other, _stacktrace), do: other
 
+  @doc """
+  Reduce an arbitrary term to a non-sensitive *shape* descriptor.
+
+  Used for malformed key-manager / vault return values, which are *returned*
+  (not raised) and so never pass through `scrub/2`. A near-miss return shape
+  (e.g. `{:ok, dek, meta}` instead of `{:ok, dek}`) can carry a raw DEK, wrapped
+  DEK, or plaintext; embedding it verbatim in an error tuple leaks it to any
+  caller/logger. This keeps the shape (for debugging) while dropping the bytes:
+  binaries collapse to `{:binary, size}`, maps to `{:map, size}`, tuples/lists
+  recurse. Atoms/integers/floats are retained as non-secret structural hints.
+  """
+  def describe_term(term) when is_tuple(term),
+    do: {:tuple, term |> Tuple.to_list() |> Enum.map(&describe_term/1)}
+
+  def describe_term(%mod{}), do: {:struct, mod}
+  def describe_term(term) when is_map(term), do: {:map, map_size(term)}
+  def describe_term(term) when is_list(term), do: {:list, length(term)}
+  def describe_term(term) when is_binary(term), do: {:binary, byte_size(term)}
+  def describe_term(term) when is_bitstring(term), do: {:bitstring, bit_size(term)}
+  def describe_term(term) when is_atom(term), do: term
+  def describe_term(term) when is_integer(term), do: term
+  def describe_term(term) when is_float(term), do: :float
+  def describe_term(_term), do: :term
+
   defp location([{module, function, arity_or_args, loc} | _]) do
     %{
       module: module,

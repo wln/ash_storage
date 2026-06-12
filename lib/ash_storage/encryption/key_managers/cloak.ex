@@ -120,5 +120,6 @@ defmodule AshStorage.Encryption.KeyManagers.Cloak do
   defp normalize_vault_result({:ok, data}) when is_binary(data), do: {:ok, data}
   defp normalize_vault_result({:error, _reason} = error), do: error
   defp normalize_vault_result(data) when is_binary(data), do: {:ok, data}
-  defp normalize_vault_result(other), do: {:error, {:invalid_cloak_vault_return, other}}
+  defp normalize_vault_result(other),
+    do: {:error, {:invalid_cloak_vault_return, ScrubbedError.describe_term(other)}}
 end

@@ -128,8 +128,19 @@ defmodule AshStorage.Plug.Proxy do
       access: access,
       actor_assign: actor_assign,
       max_lifetime_seconds: max_lifetime_seconds,
+      allowed_dispositions: resolve_allowed_dispositions(opts),
       content_type_fallback: Keyword.get(opts, :content_type_fallback, "application/octet-stream")
     }
+  end
+
+  # `inline` rendering of caller-influenced `content_type` is a stored-XSS vector,
+  # so it is never the default — a route must opt in with `allow_inline: true`.
+  defp resolve_allowed_dispositions(opts) do
+    if Keyword.get(opts, :allow_inline, false) do
+      ["attachment", "inline"]
+    else
+      ["attachment"]
+    end
   end
 
   defp validate_actor_assign(nil), do: nil
@@ -155,10 +166,10 @@ defmodule AshStorage.Plug.Proxy do
 
   # A blob-aware / encryption-aware route that configures no access is a
   # foot-gun — it serves protected blobs through an unsigned public proxy. The
-  # check is governed by an Ash-style switch so applications can adopt it on
-  # their own cadence:
+  # default is fail-closed (`:require`): such a route raises at init unless it
+  # declares an access posture. Applications can relax this on their own cadence:
   #
-  #     config :ash_storage, :proxy_access_requirement, :warn  # :off | :warn | :require
+  #     config :ash_storage, :proxy_access_requirement, :require  # :off | :warn | :require
   #
   # An explicit `access:` (or a bare `:secret`), including `access: :public`,
   # always silences this — only a *defaulted* public access on a protected route
@@ -168,7 +179,7 @@ defmodule AshStorage.Plug.Proxy do
     protected_route? = not is_nil(blob_resource) or encryption_layer?(layers)
 
     if protected_route? and not access_configured? do
-      case Application.get_env(:ash_storage, :proxy_access_requirement, :warn) do
+      case Application.get_env(:ash_storage, :proxy_access_requirement, :require) do
         :off ->
           :ok
 
@@ -265,10 +276,11 @@ defmodule AshStorage.Plug.Proxy do
 
     conn
     |> maybe_no_store(opts)
+    |> ResponseMetadata.put_nosniff()
     |> Plug.Conn.put_resp_content_type(content_type)
     |> ResponseMetadata.put_content_disposition(
       blob: blob,
-      allowed_dispositions: ["attachment", "inline"]
+      allowed_dispositions: opts.allowed_dispositions
     )
     |> Plug.Conn.send_resp(200, data)
     |> Plug.Conn.halt()

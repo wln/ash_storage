@@ -488,7 +488,9 @@ defmodule AshStorage.Layer.Encryption do
   defp normalize_wrap_dek({:error, _reason} = error, _key_manager), do: error
 
   defp normalize_wrap_dek(other, key_manager) do
-    {:error, {:invalid_encryption_key_manager_return, key_manager, :wrap_dek, other}}
+    {:error,
+     {:invalid_encryption_key_manager_return, key_manager, :wrap_dek,
+      ScrubbedError.describe_term(other)}}
   end
 
   defp normalize_wrapped_dek({:ok, wrapped_dek}, _key_manager, _callback)
@@ -499,21 +501,27 @@ defmodule AshStorage.Layer.Encryption do
   defp normalize_wrapped_dek({:error, _reason} = error, _key_manager, _callback), do: error
 
   defp normalize_wrapped_dek(other, key_manager, callback) do
-    {:error, {:invalid_encryption_key_manager_return, key_manager, callback, other}}
+    {:error,
+     {:invalid_encryption_key_manager_return, key_manager, callback,
+      ScrubbedError.describe_term(other)}}
   end
 
   defp normalize_unwrapped_dek({:ok, dek}, _key_manager) when is_binary(dek), do: {:ok, dek}
   defp normalize_unwrapped_dek({:error, _reason} = error, _key_manager), do: error
 
   defp normalize_unwrapped_dek(other, key_manager) do
-    {:error, {:invalid_encryption_key_manager_return, key_manager, :unwrap_dek, other}}
+    {:error,
+     {:invalid_encryption_key_manager_return, key_manager, :unwrap_dek,
+      ScrubbedError.describe_term(other)}}
   end
 
   defp normalize_finalized_dek(:ok, _key_manager), do: :ok
   defp normalize_finalized_dek({:error, _reason} = error, _key_manager), do: error
 
   defp normalize_finalized_dek(other, key_manager) do
-    {:error, {:invalid_encryption_key_manager_return, key_manager, :finalize_wrapped_dek, other}}
+    {:error,
+     {:invalid_encryption_key_manager_return, key_manager, :finalize_wrapped_dek,
+      ScrubbedError.describe_term(other)}}
   end
 
   defp ensure_metadata_map(metadata) when is_map(metadata), do: metadata
