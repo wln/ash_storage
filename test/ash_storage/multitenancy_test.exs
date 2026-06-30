@@ -82,12 +82,15 @@ defmodule AshStorage.MultitenancyTest do
       blob_resource(AshStorage.MultitenancyTest.TenantBlob)
       attachment_resource(AshStorage.MultitenancyTest.TenantAttachment)
 
-      has_one_attached(:cover_image)
+      has_one_attached :cover_image do
+        analyzer(AshStorage.Test.TestAnalyzer, write_attributes: [line_count: :cached_line_count])
+      end
     end
 
     attributes do
       uuid_primary_key :id
       attribute :title, :string, allow_nil?: false
+      attribute :cached_line_count, :integer, public?: true
     end
 
     actions do
@@ -203,6 +206,37 @@ defmodule AshStorage.MultitenancyTest do
 
       post = Ash.load!(post, [cover_image: :blob], tenant: tenant1)
       assert post.cover_image.blob.id == blob.id
+    end
+  end
+
+  describe "async analyzer write_attributes with tenant" do
+    test "writes analyzer results to the parent record in the tenant", %{tenant1: tenant1} do
+      post =
+        TenantPost
+        |> Ash.Changeset.for_create(:create, %{title: "test"}, tenant: tenant1)
+        |> Ash.create!()
+
+      {:ok, %{blob: blob}} =
+        Operations.attach(post, :cover_image, "hello\nworld\n",
+          filename: "hello.txt",
+          content_type: "text/plain",
+          tenant: tenant1
+        )
+
+      # Reset cached_line_count and run analyzer again to simulate async behavior
+      post
+      |> Ash.Changeset.for_update(:update, %{}, tenant: tenant1)
+      |> Ash.Changeset.force_change_attribute(:cached_line_count, nil)
+      |> Ash.update!()
+
+      {:ok, blob} = Operations.run_analyzer(blob, AshStorage.Test.TestAnalyzer)
+
+      analyzer_key = to_string(AshStorage.Test.TestAnalyzer)
+      assert blob.analyzers[analyzer_key]["status"] == "complete"
+      assert blob.metadata["line_count"] == 3
+
+      post = Ash.get!(TenantPost, post.id, tenant: tenant1)
+      assert post.cached_line_count == 3
     end
   end
 end
