@@ -19,5 +19,9 @@ defmodule AshStorage.Test.Domain do
     resource AshStorage.Test.ActorRequiredPost
     resource AshStorage.Test.NoHeadPost
     resource AshStorage.Test.MultipartEtagPost
+    resource AshStorage.Test.NestedPathPost
+    resource AshStorage.Test.PathAttachment
+    resource AshStorage.Test.PathPost
+    resource AshStorage.Test.Tenant
   end
 end
