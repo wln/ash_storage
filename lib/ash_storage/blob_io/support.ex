@@ -181,6 +181,25 @@ defmodule AshStorage.BlobIO.Support do
   def normalize_upload({:ok, attrs}) when is_map(attrs), do: {:ok, attrs}
   def normalize_upload({:error, _} = error), do: error
 
+  @doc """
+  Validate that a storage key is safe to hand to a service.
+
+  Keys are persisted verbatim, become service object paths, and are exposed in
+  proxy URLs, so a key must be a non-empty relative path with no traversal
+  (`..`) segments. Derived keys (an attachment's `path` function) pass through
+  here before any bytes are uploaded, so a misconfigured derivation fails the
+  write instead of escaping a disk root or poisoning URLs.
+  """
+  def validate_key(key) when is_binary(key) do
+    cond do
+      key == "" -> {:error, :empty_storage_key}
+      match?({:ok, _}, Path.safe_relative(key)) -> :ok
+      true -> {:error, {:unsafe_storage_key, key}}
+    end
+  end
+
+  def validate_key(key), do: {:error, {:invalid_storage_key, key}}
+
   defp maybe_put_expected_md5(%Context{} = ctx, operation) do
     Context.put_expected_md5(ctx, expected_md5(operation))
   end
