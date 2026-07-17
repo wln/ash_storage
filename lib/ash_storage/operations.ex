@@ -14,6 +14,7 @@ defmodule AshStorage.Operations do
   """
 
   require Ash.Query
+  require Logger
 
   alias AshStorage.AnalyzerMetadata
   alias AshStorage.BlobIO
@@ -83,6 +84,18 @@ defmodule AshStorage.Operations do
           tenant: Keyword.get(action_opts, :tenant),
           operation: :direct_upload
         )
+
+      # A `path` function needs a changeset to derive the key from, and a direct
+      # upload has none — `resolve_key_with_tenant/3` falls back to the
+      # tenant/random default. Make that silent inconsistency visible: blobs
+      # direct-uploaded for this attachment will not share the derived layout.
+      if is_function(attachment_def.path) do
+        Logger.warning(
+          "attachment #{inspect(attachment_name)} on #{inspect(resource)} declares a `path` " <>
+            "for storage keys, but direct uploads have no changeset to derive a key from. " <>
+            "Falling back to the tenant/random default key."
+        )
+      end
 
       key =
         AshStorage.resolve_key_with_tenant(attachment_def, Keyword.get(opts, :tenant), resource)

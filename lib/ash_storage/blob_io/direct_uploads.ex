@@ -73,6 +73,7 @@ defmodule AshStorage.BlobIO.DirectUploads do
 
       with {:ok, operation} <- Layers.run(operation, :direct_upload),
            operation = Support.put_service_context(operation),
+           :ok <- Support.validate_key(operation.draft.key),
            blob_resource = Info.storage_blob_resource!(operation.blob_context.resource),
            {:ok, blob} <-
              Ash.create(

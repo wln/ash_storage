@@ -41,4 +41,28 @@ defmodule AshStorage.BlobIO.SupportTest do
       assert result.service.context.filename == nil
     end
   end
+
+  describe "validate_key/1" do
+    test "accepts a relative, traversal-free key" do
+      assert :ok = Support.validate_key("acme/avatars/9f2c")
+    end
+
+    test "rejects an empty key" do
+      assert {:error, :empty_storage_key} = Support.validate_key("")
+    end
+
+    test "rejects a key that escapes its root" do
+      assert {:error, {:unsafe_storage_key, "../etc/passwd"}} =
+               Support.validate_key("../etc/passwd")
+    end
+
+    test "rejects an absolute key" do
+      assert {:error, {:unsafe_storage_key, "/etc/passwd"}} =
+               Support.validate_key("/etc/passwd")
+    end
+
+    test "rejects a non-binary key" do
+      assert {:error, {:invalid_storage_key, nil}} = Support.validate_key(nil)
+    end
+  end
 end

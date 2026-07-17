@@ -93,6 +93,7 @@ defmodule AshStorage.BlobIO.Writer do
       with {:ok, operation} <- Layers.run(operation, :write),
            operation = put_size_attrs(operation),
            operation = Support.put_service_context(operation),
+           :ok <- Support.validate_key(operation.draft.key),
            {:ok, service_attrs} <-
              Support.normalize_upload(
                operation.service.mod.upload(
