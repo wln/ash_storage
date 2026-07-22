@@ -188,15 +188,46 @@ defmodule AshStorage.Plug.ProxyTest do
       assert disposition =~ "attachment"
     end
 
-    test "ignores a caller-requested inline disposition unless the route opts in" do
+    test "a scriptable type is forced to attachment even when the mount allows documents" do
       ctx = Service.Context.new([])
-      Service.Test.upload("page.html", "x", ctx)
+      Service.Test.upload("page.html", "<script>alert(1)</script>", ctx)
 
-      conn = call("/page.html?disposition=inline")
+      # text/html is in no inline policy, so ?disposition=inline cannot widen it.
+      conn = call("/page.html?disposition=inline", inline: :documents)
 
       [disposition] = Plug.Conn.get_resp_header(conn, "content-disposition")
       assert disposition =~ "attachment"
       refute disposition =~ "inline"
+    end
+
+    test "an allowlisted type renders inline by default (no query param)" do
+      ctx = Service.Context.new([])
+      Service.Test.upload("photo.png", "image data", ctx)
+
+      conn = call("/photo.png", inline: :images)
+
+      [disposition] = Plug.Conn.get_resp_header(conn, "content-disposition")
+      assert disposition =~ "inline"
+    end
+
+    test "?disposition=attachment forces download even for an allowlisted type" do
+      ctx = Service.Context.new([])
+      Service.Test.upload("photo.png", "image data", ctx)
+
+      conn = call("/photo.png?disposition=attachment", inline: :images)
+
+      [disposition] = Plug.Conn.get_resp_header(conn, "content-disposition")
+      assert disposition =~ "attachment"
+    end
+
+    test "SVG is never inline, even under an images policy" do
+      ctx = Service.Context.new([])
+      Service.Test.upload("logo.svg", "<svg onload=\"alert(1)\"/>", ctx)
+
+      conn = call("/logo.svg", inline: :images)
+
+      [disposition] = Plug.Conn.get_resp_header(conn, "content-disposition")
+      assert disposition =~ "attachment"
     end
 
     test "uses blob filename extension when stored content-type is generic" do
@@ -226,9 +257,11 @@ defmodule AshStorage.Plug.ProxyTest do
 
     test "sets inline content-disposition with sanitized filename" do
       ctx = Service.Context.new([])
-      Service.Test.upload("documents/file.enc", "pdf content", ctx)
+      Service.Test.upload("documents/file.pdf", "pdf content", ctx)
 
-      conn = call(~s(/documents/file.enc?disposition=inline&filename=report"bad.pdf), allow_inline: true)
+      # application/pdf is in the :documents inline policy, so it renders inline;
+      # the filename query param is sanitized for the header.
+      conn = call(~s(/documents/file.pdf?filename=report"bad.pdf), inline: :documents)
       assert conn.status == 200
 
       [content_disposition] = Plug.Conn.get_resp_header(conn, "content-disposition")
@@ -259,7 +292,7 @@ defmodule AshStorage.Plug.ProxyTest do
           resource: LayeredPost,
           attachment: :cover_image,
           access: :public,
-          allow_inline: true
+          inline: :documents
         )
 
       conn =

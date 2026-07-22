@@ -95,6 +95,29 @@ defmodule AshStorage.Plug.Proxy do
   presented in its last 4 minutes passes a 300-second cap; one presented in
   its first hour does not. Set the cap close to the smallest legitimate URL
   lifetime in your app.
+
+  ## Inline rendering
+
+  Raster images render inline by default (`inline: :images`); a caller-influenced
+  `content_type` outside the policy (`text/html`, `image/svg+xml`,
+  `application/pdf`, unknown) is served `Content-Disposition: attachment` so it
+  cannot execute inline in the application origin — a stored-XSS vector — and
+  `X-Content-Type-Options: nosniff` is always set. Widen or narrow the inline
+  set with `:inline` — a content-type allowlist rather than an all-or-nothing
+  switch:
+
+      forward "/documents", AshStorage.Plug.Proxy,
+        resource: MyApp.Document,
+        attachment: :file,
+        access: {:signed, secret: "..."},
+        inline: :documents   # raster images + application/pdf preview inline
+
+  Accepts `:images` (default), `:documents`, `:none`, or an explicit list; see
+  `AshStorage.Plug.ResponseMetadata.inline_content_types/1`. A type outside the
+  policy is always `attachment`, and `?disposition=attachment` can force a
+  download even for an inline type. Because serving is key-addressed, this policy
+  applies to **every** blob reachable through the mount — scope a permissive
+  policy to a mount whose key space holds only content you trust to render.
   """
 
   @behaviour Plug
@@ -128,19 +151,9 @@ defmodule AshStorage.Plug.Proxy do
       access: access,
       actor_assign: actor_assign,
       max_lifetime_seconds: max_lifetime_seconds,
-      allowed_dispositions: resolve_allowed_dispositions(opts),
+      inline: ResponseMetadata.inline_content_types(Keyword.get(opts, :inline, :images)),
       content_type_fallback: Keyword.get(opts, :content_type_fallback, "application/octet-stream")
     }
-  end
-
-  # `inline` rendering of caller-influenced `content_type` is a stored-XSS vector,
-  # so it is never the default — a route must opt in with `allow_inline: true`.
-  defp resolve_allowed_dispositions(opts) do
-    if Keyword.get(opts, :allow_inline, false) do
-      ["attachment", "inline"]
-    else
-      ["attachment"]
-    end
   end
 
   defp validate_actor_assign(nil), do: nil
@@ -280,7 +293,8 @@ defmodule AshStorage.Plug.Proxy do
     |> Plug.Conn.put_resp_content_type(content_type)
     |> ResponseMetadata.put_content_disposition(
       blob: blob,
-      allowed_dispositions: opts.allowed_dispositions
+      inline: opts.inline,
+      content_type: content_type
     )
     |> Plug.Conn.send_resp(200, data)
     |> Plug.Conn.halt()

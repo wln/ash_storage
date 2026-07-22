@@ -22,6 +22,10 @@ defmodule AshStorage.Plug.DiskServe do
   - `:root` - (required) the root directory where files are stored
   - `:secret` - secret key for verifying signed URLs. When set, requests
     without a valid signature are rejected with 403.
+  - `:inline` - content-type inline policy (`:images` (default), `:documents`,
+    `:none`, or a list of content types). A type in this policy is served
+    `inline`; everything else is `attachment`. `X-Content-Type-Options: nosniff`
+    is always set. See `AshStorage.Plug.ResponseMetadata.inline_content_types/1`.
   """
 
   @behaviour Plug
@@ -34,7 +38,8 @@ defmodule AshStorage.Plug.DiskServe do
 
     %{
       root: root,
-      secret: Keyword.get(opts, :secret)
+      secret: Keyword.get(opts, :secret),
+      inline: ResponseMetadata.inline_content_types(Keyword.get(opts, :inline, :images))
     }
   end
 
@@ -50,7 +55,7 @@ defmodule AshStorage.Plug.DiskServe do
         |> maybe_no_store(opts)
         |> ResponseMetadata.put_nosniff()
         |> Plug.Conn.put_resp_content_type(content_type)
-        |> ResponseMetadata.put_content_disposition()
+        |> ResponseMetadata.put_content_disposition(inline: opts.inline, content_type: content_type)
         |> Plug.Conn.send_file(200, path)
         |> Plug.Conn.halt()
       else
