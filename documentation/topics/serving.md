@@ -83,15 +83,17 @@ bytes aren't cached by shared intermediaries.
 
 ## Content disposition and inline rendering
 
-A served response defaults to `Content-Disposition: attachment`, and
-`X-Content-Type-Options: nosniff` is always set. Together these stop a
-caller-influenced `content_type` from executing in the serving origin: a
-user-uploaded `text/html` downloads rather than rendering (`attachment`), and a
-blob mislabeled as an image but containing HTML can't be MIME-sniffed into an
-active type (`nosniff`).
+Serving is governed by a content-type allowlist. Raster images render inline by
+default (`inline: :images`); any type outside the policy — `text/html`,
+`image/svg+xml`, `application/pdf`, unknown — is served
+`Content-Disposition: attachment`, and `X-Content-Type-Options: nosniff` is
+always set. Together these stop a caller-influenced `content_type` from executing
+in the serving origin: a user-uploaded `text/html` downloads rather than
+rendering, and a blob mislabeled as an image but containing HTML can't be
+MIME-sniffed into an active type.
 
-To let specific types **preview inline** (an image thumbnail, a PDF in an
-`<iframe>`), opt the route into a content-type allowlist with `:inline`:
+Widen the inline set — e.g. to preview a PDF in an `<iframe>` — or narrow it,
+with `:inline`:
 
 ```elixir
 forward "/documents", AshStorage.Plug.Proxy,
@@ -103,10 +105,10 @@ forward "/documents", AshStorage.Plug.Proxy,
 
 `:inline` accepts:
 
-  * **`:none`** — nothing inline; every response is `attachment` (the default).
   * **`:images`** — raster images (`image/png`, `image/jpeg`, `image/gif`,
-    `image/webp`).
+    `image/webp`). The default.
   * **`:documents`** — `:images` plus `application/pdf`.
+  * **`:none`** — nothing inline; every response is `attachment`.
   * **an explicit list** — e.g. `["image/png", "application/pdf"]`.
 
 A response is served `inline` only when its resolved content-type is in the
@@ -125,6 +127,21 @@ so the two plugs are symmetric.
 > so `application/pdf` is a safe inline opt-in but SVG is not. Only add
 > `image/svg+xml` to an explicit list if you fully control or sanitize the
 > content.
+
+### Disposition applies only to app-served paths
+
+The `:inline` allowlist and `nosniff` are set by the serving plugs, so they apply
+only when the bytes pass **through your application** — proxy and disk serving.
+On the **direct (`:service_url`) path**, the browser fetches straight from the
+provider and these controls never run: the object is served under its own stored
+`Content-Type` with whatever `Content-Disposition` it carries (none by default,
+i.e. inline) and no `nosniff`. Bytes there render in the provider's origin (see
+above), so the same-origin XSS risk is lower — but active content (HTML/SVG) can
+still reach sibling objects in the same bucket origin, and a bucket fronted on
+your app's domain is same-origin again. **Serve untrusted content through the
+proxy**, where these controls apply. (Setting a provider-side default
+disposition on the bucket, or configuring `response-content-disposition` on the
+presign, is an app/provider-level option outside these plugs.)
 
 ### A mount's policy applies to every blob it can serve
 
