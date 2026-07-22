@@ -67,6 +67,7 @@ defmodule AshStorage.MixProject do
         "documentation/topics/encryption.md",
         "documentation/topics/file-arguments.md",
         "documentation/topics/direct-uploads.md",
+        "documentation/topics/serving.md",
         "documentation/topics/storage-keys.md",
         "documentation/topics/checksum-verification.md",
         "documentation/topics/faq.md",

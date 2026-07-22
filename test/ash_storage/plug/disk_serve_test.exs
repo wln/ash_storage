@@ -181,5 +181,50 @@ defmodule AshStorage.Plug.DiskServeTest do
       [disposition] = Plug.Conn.get_resp_header(conn, "content-disposition")
       assert disposition == "attachment; filename=\"download.txt\""
     end
+
+    test "images render inline by default; nosniff always set (symmetric with Proxy)" do
+      File.write!(Path.join(@root, "photo.png"), "img")
+
+      conn =
+        conn(:get, "/photo.png")
+        |> DiskServe.call(DiskServe.init(root: @root))
+
+      assert conn.status == 200
+      assert Plug.Conn.get_resp_header(conn, "x-content-type-options") == ["nosniff"]
+      [disposition] = Plug.Conn.get_resp_header(conn, "content-disposition")
+      assert disposition == "inline"
+    end
+
+    test "a non-allowlisted type is attachment by default" do
+      # hello.txt (text/plain) is not in the default :images policy.
+      conn =
+        conn(:get, "/hello.txt")
+        |> DiskServe.call(DiskServe.init(root: @root))
+
+      [disposition] = Plug.Conn.get_resp_header(conn, "content-disposition")
+      assert disposition == "attachment"
+    end
+
+    test "inline: :none forces attachment even for images" do
+      File.write!(Path.join(@root, "photo.png"), "img")
+
+      conn =
+        conn(:get, "/photo.png")
+        |> DiskServe.call(DiskServe.init(root: @root, inline: :none))
+
+      [disposition] = Plug.Conn.get_resp_header(conn, "content-disposition")
+      assert disposition == "attachment"
+    end
+
+    test "a scriptable type stays attachment even under an inline policy" do
+      File.write!(Path.join(@root, "logo.svg"), "<svg onload=\"alert(1)\"/>")
+
+      conn =
+        conn(:get, "/logo.svg")
+        |> DiskServe.call(DiskServe.init(root: @root, inline: :images))
+
+      [disposition] = Plug.Conn.get_resp_header(conn, "content-disposition")
+      assert disposition == "attachment"
+    end
   end
 end
