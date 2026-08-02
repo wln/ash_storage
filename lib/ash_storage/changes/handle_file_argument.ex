@@ -4,9 +4,9 @@ defmodule AshStorage.Changes.HandleFileArgument do
 
   require Ash.Query
 
+  alias AshStorage.BlobIO
   alias AshStorage.Changes.AnalyzerRun
   alias AshStorage.Info
-  alias AshStorage.Service.Context
 
   @impl true
   def init(opts), do: {:ok, opts}
@@ -85,11 +85,17 @@ defmodule AshStorage.Changes.HandleFileArgument do
 
     with {:ok, attachment_def} <- Info.attachment(resource, attachment_name),
          {:ok, {service_mod, service_opts}} <- resolve_service(resource, attachment_def) do
-      ctx = build_context(service_opts, resource, attachment_def, changeset)
-      key = AshStorage.resolve_key(attachment_def, ctx, changeset)
+      bctx =
+        BlobIO.BlobContext.from_changeset(changeset, attachment_def,
+          operation: :attach,
+          record: changeset.data
+        )
+
+      service_ctx = BlobIO.BlobContext.to_service_context(bctx, service_opts)
+      key = AshStorage.resolve_key(attachment_def, service_ctx, changeset)
 
       with {:ok, blob} <-
-             upload_and_create_blob(resource, service_mod, ctx, file,
+             upload_and_create_blob(bctx, service_mod, service_opts, file,
                key: key,
                filename: filename,
                content_type: content_type
@@ -101,7 +107,7 @@ defmodule AshStorage.Changes.HandleFileArgument do
            blob: blob,
            attachment_def: attachment_def,
            service_mod: service_mod,
-           ctx: ctx,
+           ctx: service_ctx,
            has_oban_analyzers?: AnalyzerRun.has_oban_analyzers?(attachment_def)
          }}
       end
@@ -184,85 +190,15 @@ defmodule AshStorage.Changes.HandleFileArgument do
     end
   end
 
-  defp build_context(service_opts, resource, attachment_def, changeset) do
-    Context.new(service_opts,
-      resource: resource,
-      attachment: attachment_def,
-      actor: changeset.context[:private][:actor],
-      tenant: changeset.tenant
+  defp upload_and_create_blob(bctx, service_mod, service_opts, io, opts) do
+    BlobIO.write(
+      io,
+      bctx,
+      Keyword.merge(opts,
+        service: {service_mod, service_opts}
+      )
     )
   end
-
-  defp persistable_service_opts(service_mod, service_opts) do
-    if function_exported?(service_mod, :service_opts_fields, 0) do
-      fields = service_mod.service_opts_fields()
-      field_names = Keyword.keys(fields)
-
-      service_opts
-      |> Keyword.take(field_names)
-      |> Map.new()
-    else
-      %{}
-    end
-  end
-
-  defp upload_and_create_blob(resource, service_mod, ctx, io, opts) do
-    filename = Keyword.fetch!(opts, :filename)
-    content_type = Keyword.get(opts, :content_type, "application/octet-stream")
-
-    data = read_io(io)
-    key = Keyword.fetch!(opts, :key)
-    checksum = :crypto.hash(:md5, data) |> Base.encode64()
-    byte_size = byte_size(data)
-
-    # See `AshStorage.Changes.Attach.upload_and_create_blob/6` for the
-    # rationale on threading the blob's content_type / filename into the
-    # context before calling `service_mod.upload/3`.
-    ctx =
-      ctx
-      |> Context.put_expected_md5(checksum)
-      |> Context.put_blob_metadata(content_type: content_type, filename: filename)
-
-    with {:ok, extra_blob_attrs} <- normalize_upload(service_mod.upload(key, data, ctx)) do
-      blob_resource = Info.storage_blob_resource!(resource)
-
-      blob_attrs =
-        %{
-          key: key,
-          filename: filename,
-          content_type: content_type,
-          byte_size: byte_size,
-          checksum: checksum,
-          service_name: service_mod,
-          service_opts: persistable_service_opts(service_mod, ctx.service_opts),
-          metadata: %{}
-        }
-        |> Map.merge(extra_blob_attrs)
-
-      Ash.create(blob_resource, blob_attrs, action: :create)
-    end
-  end
-
-  defp normalize_upload(:ok), do: {:ok, %{}}
-  defp normalize_upload({:ok, attrs}) when is_map(attrs), do: {:ok, attrs}
-  defp normalize_upload({:error, _} = error), do: error
-
-  defp read_io(%Ash.Type.File{} = file) do
-    {:ok, device} = Ash.Type.File.open(file, [:read, :binary])
-    data = IO.binread(device, :eof)
-    File.close(device)
-    data
-  end
-
-  defp read_io(%File.Stream{} = stream), do: Enum.into(stream, <<>>, &IO.iodata_to_binary/1)
-
-  # See `AshStorage.Changes.Attach.read_io/1` for the rationale on this
-  # clause and the full input contract.
-  defp read_io(%{__struct__: Plug.Upload, path: path}) when is_binary(path),
-    do: File.read!(path)
-
-  defp read_io(data) when is_binary(data), do: data
-  defp read_io(data) when is_list(data), do: IO.iodata_to_binary(data)
 
   # sobelow_skip ["DOS.BinToAtom"]
   defp maybe_replace_existing(record, %{type: :one} = attachment_def, service_mod, ctx) do
