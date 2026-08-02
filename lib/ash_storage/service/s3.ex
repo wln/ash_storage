@@ -10,10 +10,15 @@ if Code.ensure_loaded?(ReqS3) do
         storage do
           service {AshStorage.Service.S3,
             bucket: "my-bucket",
-            region: "us-east-1",
-            access_key_id: "AKIA...",
-            secret_access_key: "..."}
+            region: "us-east-1"}
         end
+
+    Credentials are resolved at request time from ambient sources such as the
+    `AWS_ACCESS_KEY_ID` / `AWS_SECRET_ACCESS_KEY` environment variables. They can
+    also be passed inline as `:access_key_id` / `:secret_access_key`, but inline
+    credentials are never persisted on the blob row, so asynchronous operations
+    that rebuild the service from the row (purge, variants, analyzers) must be
+    able to resolve them ambiently too.
 
     ## Options
 
@@ -32,11 +37,11 @@ if Code.ensure_loaded?(ReqS3) do
 
     @impl true
     def service_opts_fields do
+      # Persisted on the blob row, so no credentials here: `:access_key_id` and
+      # `:secret_access_key` are runtime-only (see `resolve_credential/3`).
       [
         bucket: [type: :string, allow_nil?: false],
         region: [type: :string],
-        access_key_id: [type: :string],
-        secret_access_key: [type: :string],
         endpoint_url: [type: :string],
         prefix: [type: :string],
         decode_body: [type: :boolean]
