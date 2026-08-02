@@ -37,34 +37,43 @@ defmodule AshStorage.Plug.ResponseMetadata do
   end
 
   @doc """
-  Add a `Content-Disposition` header from request query parameters.
+  Add a `Content-Disposition` header.
 
-  The `filename` query parameter is a presentation hint only. If absent, a
-  blob-aware caller can fall back to `blob.filename`; key-only callers preserve
-  the current behavior and emit only the disposition token.
+  Defaults to `attachment` so that caller-influenced `content_type` (e.g.
+  `text/html`, `image/svg+xml`) cannot be rendered inline through the
+  application origin — a stored-XSS vector. `inline` is honored ONLY when the
+  route opts into it via `allowed_dispositions` AND the request asks for it;
+  it is never the default. The `filename` query parameter is a presentation
+  hint only, falling back to `blob.filename`.
   """
   def put_content_disposition(conn, opts \\ []) do
     params = Plug.Conn.fetch_query_params(conn).query_params
     allowed = Keyword.get(opts, :allowed_dispositions, ["attachment"])
     blob = Keyword.get(opts, :blob)
+    filename = params["filename"] || blob_filename(blob)
 
-    case params["disposition"] do
-      disposition when is_binary(disposition) ->
-        if disposition in allowed do
-          filename = params["filename"] || blob_filename(blob)
+    requested = params["disposition"]
 
-          Plug.Conn.put_resp_header(
-            conn,
-            "content-disposition",
-            disposition(disposition, filename)
-          )
-        else
-          conn
-        end
+    disposition =
+      if is_binary(requested) and requested in allowed do
+        requested
+      else
+        "attachment"
+      end
 
-      _ ->
-        conn
-    end
+    Plug.Conn.put_resp_header(
+      conn,
+      "content-disposition",
+      disposition(disposition, filename)
+    )
+  end
+
+  @doc """
+  Set `X-Content-Type-Options: nosniff` so intermediaries/browsers do not
+  MIME-sniff a response into an active content type.
+  """
+  def put_nosniff(conn) do
+    Plug.Conn.put_resp_header(conn, "x-content-type-options", "nosniff")
   end
 
   defp meaningful_content_type?(content_type), do: content_type not in @generic_content_types

@@ -128,8 +128,19 @@ defmodule AshStorage.Plug.Proxy do
       access: access,
       actor_assign: actor_assign,
       max_lifetime_seconds: max_lifetime_seconds,
+      allowed_dispositions: resolve_allowed_dispositions(opts),
       content_type_fallback: Keyword.get(opts, :content_type_fallback, "application/octet-stream")
     }
+  end
+
+  # `inline` rendering of caller-influenced `content_type` is a stored-XSS vector,
+  # so it is never the default — a route must opt in with `allow_inline: true`.
+  defp resolve_allowed_dispositions(opts) do
+    if Keyword.get(opts, :allow_inline, false) do
+      ["attachment", "inline"]
+    else
+      ["attachment"]
+    end
   end
 
   defp validate_actor_assign(nil), do: nil
@@ -265,10 +276,11 @@ defmodule AshStorage.Plug.Proxy do
 
     conn
     |> maybe_no_store(opts)
+    |> ResponseMetadata.put_nosniff()
     |> Plug.Conn.put_resp_content_type(content_type)
     |> ResponseMetadata.put_content_disposition(
       blob: blob,
-      allowed_dispositions: ["attachment", "inline"]
+      allowed_dispositions: opts.allowed_dispositions
     )
     |> Plug.Conn.send_resp(200, data)
     |> Plug.Conn.halt()

@@ -176,6 +176,29 @@ defmodule AshStorage.Plug.ProxyTest do
       assert content_type =~ "image/jpeg"
     end
 
+    test "sets X-Content-Type-Options: nosniff and defaults to attachment disposition" do
+      ctx = Service.Context.new([])
+      Service.Test.upload("page.html", "<script>alert(1)</script>", ctx)
+
+      conn = call("/page.html")
+      assert conn.status == 200
+      assert Plug.Conn.get_resp_header(conn, "x-content-type-options") == ["nosniff"]
+
+      [disposition] = Plug.Conn.get_resp_header(conn, "content-disposition")
+      assert disposition =~ "attachment"
+    end
+
+    test "ignores a caller-requested inline disposition unless the route opts in" do
+      ctx = Service.Context.new([])
+      Service.Test.upload("page.html", "x", ctx)
+
+      conn = call("/page.html?disposition=inline")
+
+      [disposition] = Plug.Conn.get_resp_header(conn, "content-disposition")
+      assert disposition =~ "attachment"
+      refute disposition =~ "inline"
+    end
+
     test "uses blob filename extension when stored content-type is generic" do
       {:ok, attachment} = AshStorage.Info.attachment(LayeredPost, :cover_image)
 
@@ -205,7 +228,7 @@ defmodule AshStorage.Plug.ProxyTest do
       ctx = Service.Context.new([])
       Service.Test.upload("documents/file.enc", "pdf content", ctx)
 
-      conn = call(~s(/documents/file.enc?disposition=inline&filename=report"bad.pdf))
+      conn = call(~s(/documents/file.enc?disposition=inline&filename=report"bad.pdf), allow_inline: true)
       assert conn.status == 200
 
       [content_disposition] = Plug.Conn.get_resp_header(conn, "content-disposition")
@@ -231,7 +254,13 @@ defmodule AshStorage.Plug.ProxyTest do
           content_type: "application/octet-stream"
         )
 
-      plug_opts = Proxy.init(resource: LayeredPost, attachment: :cover_image, access: :public)
+      plug_opts =
+        Proxy.init(
+          resource: LayeredPost,
+          attachment: :cover_image,
+          access: :public,
+          allow_inline: true
+        )
 
       conn =
         conn(:get, "/#{blob.key}?disposition=inline&filename=#{URI.encode_www_form(filename)}")
