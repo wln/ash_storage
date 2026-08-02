@@ -1,17 +1,26 @@
 defmodule AshStorage.BlobIO.Support do
   @moduledoc false
   # Shared internal helpers for the BlobIO phase modules: service resolution,
-  # BlobContext -> Service.Context projection, and input/upload normalization.
-  # Phase policy stays in the phase modules; helpers here only convert data
-  # shapes or preserve existing service/Ash errors.
+  # BlobContext -> Service.Context projection, runtime layer collection, durable
+  # layer-metadata read/embed, and input/upload normalization. Phase policy stays
+  # in the phase modules; helpers here only convert data shapes or preserve
+  # existing service/Ash errors.
 
   alias AshStorage.BlobIO.BlobContext
+  alias AshStorage.BlobIO.Layers
   alias AshStorage.BlobIO.Operation.ServiceState
   alias AshStorage.Info
   alias AshStorage.Service.Context
 
+  @metadata_key "ash_storage"
+  @blob_io_key "blob_io"
+  @layers_key "layers"
+
   @doc """
   Rebuild the service context for an operation from its current BlobIO context.
+
+  Layers may adjust `blob_context` or `service.opts`, so phases call this
+  before and after running layers to keep the service adapter boundary in sync.
   """
   def put_service_context(
         %{blob_context: %BlobContext{}, service: %ServiceState{} = service} = operation
@@ -23,6 +32,36 @@ defmodule AshStorage.BlobIO.Support do
       |> put_blob_metadata(operation)
 
     %{operation | service: %{service | context: service_ctx}}
+  end
+
+  @doc """
+  Return read layers ordered according to persisted blob layer metadata.
+
+  Reads must apply the same layer metadata keys that wrote the blob, regardless
+  of the order in the current runtime configuration. Missing persisted layer
+  metadata keys return `{:error, {:missing_blob_io_layer, key}}` so callers can
+  fail explicitly.
+  """
+  def layers_for_read(bctx, opts, layer_metadata) do
+    bctx
+    |> layers_for(opts)
+    |> Layers.order_by_metadata(layer_metadata)
+  end
+
+  @doc """
+  Collect the configured runtime layer specs for an operation.
+
+  Sources are intentionally additive: resource-level storage DSL layers,
+  attachment-level DSL layers, and explicit per-call `:layers` options. The
+  explicit option is used by raw handoff paths, such as a key-only proxy route,
+  where there is no attachment context to resolve.
+  """
+  def layers_for(bctx, opts) do
+    [
+      context_layer_specs(bctx),
+      Keyword.get(opts, :layers)
+    ]
+    |> Enum.flat_map(&Layers.normalize/1)
   end
 
   @doc """
@@ -50,6 +89,40 @@ defmodule AshStorage.BlobIO.Support do
       {:ok, {service_mod, service_opts}} -> {:ok, {service_mod, service_opts}}
       :error -> resolve_service_from_context(bctx)
     end
+  end
+
+  @doc "Extract persisted layer metadata from a blob's metadata map."
+  def layer_metadata_from_blob(%{metadata: metadata}) when is_map(metadata) do
+    get_in(metadata, [@metadata_key, @blob_io_key, @layers_key]) || []
+  end
+
+  def layer_metadata_from_blob(_blob), do: []
+
+  @doc """
+  Store layer metadata under the reserved blob metadata path.
+
+  User metadata is preserved. The reserved path is:
+  `metadata["ash_storage"]["blob_io"]["layers"]`.
+  """
+  def put_layer_metadata(metadata, []), do: metadata
+
+  def put_layer_metadata(metadata, layer_metadata) do
+    ash_storage_metadata =
+      metadata
+      |> Map.get(@metadata_key, %{})
+      |> ensure_map()
+
+    blob_io_metadata =
+      ash_storage_metadata
+      |> Map.get(@blob_io_key, %{})
+      |> ensure_map()
+      |> Map.put(@layers_key, layer_metadata)
+
+    Map.put(
+      metadata,
+      @metadata_key,
+      Map.put(ash_storage_metadata, @blob_io_key, blob_io_metadata)
+    )
   end
 
   @doc """
@@ -148,6 +221,13 @@ defmodule AshStorage.BlobIO.Support do
 
   defp blob_metadata(_operation, _key), do: nil
 
+  defp context_layer_specs(%BlobContext{resource: resource, attachment: attachment})
+       when not is_nil(resource) and not is_nil(attachment) do
+    Info.layers_for_attachment(resource, attachment)
+  end
+
+  defp context_layer_specs(_bctx), do: []
+
   defp resolve_service_from_context(%BlobContext{resource: resource, attachment: attachment})
        when not is_nil(resource) and not is_nil(attachment) do
     case Info.service_for_attachment(resource, attachment) do
@@ -157,4 +237,7 @@ defmodule AshStorage.BlobIO.Support do
   end
 
   defp resolve_service_from_context(_bctx), do: {:error, :no_service_configured}
+
+  defp ensure_map(value) when is_map(value), do: value
+  defp ensure_map(_value), do: %{}
 end

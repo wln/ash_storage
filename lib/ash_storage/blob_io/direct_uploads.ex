@@ -1,9 +1,11 @@
 defmodule AshStorage.BlobIO.DirectUploads do
   @moduledoc false
   # BlobIO direct-upload preparation phase: create a pending blob row and ask the
-  # service for client-side upload instructions. Internal.
+  # service for client-side upload instructions, after running direct-upload
+  # layers. Internal.
 
   alias AshStorage.BlobIO.BlobContext
+  alias AshStorage.BlobIO.Layers
   alias AshStorage.BlobIO.Operation.{BlobDraft, ServiceState}
   alias AshStorage.BlobIO.Support
   alias AshStorage.Info
@@ -44,6 +46,10 @@ defmodule AshStorage.BlobIO.DirectUploads do
 
   @doc """
   Create a pending blob and return service-specific direct-upload information.
+
+  Layer metadata is stored on the pending blob exactly as it is for normal
+  writes, allowing later reads or completion flows to understand the BlobIO
+  chain that shaped the upload.
   """
   def prepare(%BlobContext{} = bctx, opts) when is_list(opts) do
     with {:ok, {service_mod, service_opts}} <- Support.resolve_service(bctx, opts) do
@@ -60,11 +66,14 @@ defmodule AshStorage.BlobIO.DirectUploads do
           },
           ash_opts: Keyword.get(opts, :ash_opts, []),
           call_opts: opts,
-          service: ServiceState.new(service_mod, service_opts)
+          service: ServiceState.new(service_mod, service_opts),
+          layers: Support.layers_for(bctx, opts)
         }
         |> Support.put_service_context()
 
-      with blob_resource = Info.storage_blob_resource!(operation.blob_context.resource),
+      with {:ok, operation} <- Layers.run(operation, :direct_upload),
+           operation = Support.put_service_context(operation),
+           blob_resource = Info.storage_blob_resource!(operation.blob_context.resource),
            {:ok, blob} <-
              Ash.create(
                blob_resource,
@@ -80,7 +89,8 @@ defmodule AshStorage.BlobIO.DirectUploads do
                      operation.service.mod,
                      operation.service.opts
                    ),
-                 metadata: operation.draft.metadata
+                 metadata:
+                   Support.put_layer_metadata(operation.draft.metadata, operation.layer_metadata)
                },
                Keyword.merge(operation.ash_opts, action: :create)
              ),

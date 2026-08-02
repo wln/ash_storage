@@ -7,11 +7,13 @@ defmodule AshStorage.BlobIO.BlobContext do
   that may involve records, attachment rows, variants, analyzers, or other
   state that does not belong on the service adapter boundary.
 
-  BlobIO operation structs carry a `BlobContext` as `blob_context`, so every
-  phase shares one context shape rather than growing its own set of fields.
+  BlobIO operation structs carry a `BlobContext` as `blob_context`; layers can
+  inspect that context without requiring every phase to grow another set of
+  fields.
 
   The `operation` field is an **atom** naming the logical call (e.g. `:read`,
-  `:write`) — distinct from the per-phase `*.Operation` structs.
+  `:write`, `:rewrap`) — distinct from the per-phase `*.Operation` structs (see
+  the terminology note on `AshStorage.Layer`).
   """
 
   alias AshStorage.Service

@@ -6,6 +6,7 @@ defmodule AshStorage.BlobIO.Serving do
   # surfacing {:error, reason}.
 
   alias AshStorage.BlobIO.BlobContext
+  alias AshStorage.BlobIO.Layers
   alias AshStorage.BlobIO.Operation.ServiceState
   alias AshStorage.BlobIO.Support
   alias AshStorage.Token
@@ -47,11 +48,16 @@ defmodule AshStorage.BlobIO.Serving do
 
   @doc """
   Return the serving strategy for a blob.
+
+  Layers run before the default strategy is chosen. A layer can set
+  `operation.strategy` to bypass the default service/proxy selection, or it can
+  adjust operation options and let the default strategy evaluate them.
   """
   def strategy(nil, %BlobContext{}, _opts), do: :not_servable
 
   def strategy(blob, %BlobContext{} = bctx, opts) when is_list(opts) do
     bctx = BlobContext.put_blob(bctx, blob)
+    layer_metadata = Support.layer_metadata_from_blob(blob)
     {service_mod, service_opts} = service_for_serving(blob, bctx, opts)
 
     operation =
@@ -60,14 +66,24 @@ defmodule AshStorage.BlobIO.Serving do
         blob: blob,
         key: blob.key,
         call_opts: opts,
-        service: ServiceState.new(service_mod, service_opts)
+        service: ServiceState.new(service_mod, service_opts),
+        layer_metadata: layer_metadata,
+        layers: Support.layers_for(bctx, opts)
       }
       |> maybe_put_service_context()
 
-    case default_strategy(operation) do
-      {:service_url, url} -> {:service_url, url}
-      {:proxy_url, url} -> {:proxy_url, url}
-      _other -> :not_servable
+    case Layers.run(operation, :serving) do
+      {:ok, operation} ->
+        operation = maybe_put_service_context(operation)
+
+        case operation.strategy || default_strategy(operation) do
+          {:service_url, url} -> {:service_url, url}
+          {:proxy_url, url} -> {:proxy_url, url}
+          _other -> :not_servable
+        end
+
+      {:error, _reason} ->
+        :not_servable
     end
   end
 
@@ -87,8 +103,8 @@ defmodule AshStorage.BlobIO.Serving do
     end
   end
 
-  # Pick the built-in strategy. Unknown modes intentionally collapse to
-  # `:not_servable`.
+  # Pick the built-in strategy after layers have had a chance to alter the
+  # operation. Unknown modes intentionally collapse to `:not_servable`.
   defp default_strategy(%Operation{} = operation) do
     case serving_mode(operation.call_opts) do
       :service_url -> service_url_strategy(operation)

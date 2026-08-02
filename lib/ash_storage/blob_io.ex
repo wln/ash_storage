@@ -8,7 +8,7 @@ defmodule AshStorage.BlobIO do
   through the same context-aware path, instead of each caller reaching into a storage
   service with its own state shape. Services keep doing adapter work
   (upload/download/delete/url/direct-upload); BlobIO owns the context around those
-  calls.
+  calls. Unlayered blobs are stored as-is.
 
   This is a lower-level API: most applications use it indirectly through attaches,
   loads, and proxy serving. Reach for it directly from custom workers (e.g. Oban
@@ -20,22 +20,37 @@ defmodule AshStorage.BlobIO do
   actor, tenant, and logical `operation` through the IO path. Each phase then uses
   a narrower operation struct (`Reader.Operation`, `Writer.Operation`,
   `Serving.Operation`, `DirectUploads.Operation`), keeping service adapters small
-  while giving higher-level features the state they need.
+  while giving layers and higher-level features the state they need.
 
   ## Reading and writing
 
-    * `read/3` — read a persisted blob's logical bytes using the service
-      configuration the blob was written with.
+    * `read/3` — read a persisted blob's logical bytes; required for layers that
+      need persisted blob metadata (such as encryption).
     * `read_key/4` — read raw bytes for a `{service, key}` pair with no blob row;
-      useful for ordinary proxying.
-    * `write/3` — write logical bytes and create the blob row.
+      useful for ordinary proxying but cannot recover persisted layer metadata.
+    * `write/3` — write logical bytes and create the blob row, running write layers
+      and post-create finalizations.
+
+  ## Layers
+
+  Layers are ordered modules — configured on the `storage` DSL, on an attachment,
+  or supplied explicitly per call — that transform bytes, affect serving, or
+  persist durable per-blob metadata. Writes persist layer metadata keys + metadata
+  on the blob; reads use that to select and order the runtime layer chain and
+  **fail closed** if a persisted layer has no configured runtime match, rather than
+  serving raw, still-transformed bytes. A byte-transforming layer such as encryption
+  changes the stored representation — see the rollout note in the `Layers` guide.
+  The bundled encryption layer is `AshStorage.Layer.Encryption`.
+
+  See the `Layers` and `Encryption` guides for the layer model, metadata, serving
+  policy, and encryption/key-management examples.
 
   ## Application background jobs
 
   Application-owned background jobs (e.g. Oban) that process blobs should treat
   BlobIO as the storage boundary. Carry durable identity in the payload — blob id, resource module or
   known worker type, attachment name, tenant, and output/finalization data — not
-  storage keys, raw service options, or large byte payloads. The
+  storage keys, raw service options, plaintext DEKs, or large byte payloads. The
   worker loads the blob, rebuilds an `AshStorage.BlobIO.BlobContext`, and calls
   `read/3` (and `write/3` for derived output), then finalizes the domain
   relationship through its own Ash action or workflow.
@@ -85,6 +100,7 @@ defmodule AshStorage.BlobIO do
   - `:ash_opts` - options passed to `Ash.create/3`.
   - `:action` - create action, defaults to `:create`.
   - `:blob_attrs` - additional blob attributes, e.g. variant linkage.
+  - `:layers` - optional layer modules or `{module, opts}` tuples.
   """
   def write(input, %BlobContext{} = bctx, opts) when is_list(opts) do
     Writer.write(input, bctx, opts)

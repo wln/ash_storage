@@ -1,14 +1,18 @@
 defmodule AshStorage.BlobIO.Writer do
   @moduledoc false
-  # BlobIO write phase: upload to the service, then create the blob row.
-  # Internal — `AshStorage.BlobIO.write/3` is the public entry.
+  # BlobIO write phase: run write layers, upload to the service, create the blob
+  # row, then drain post-create finalizations registered via `Layer.finalize/3`.
+  # Emitted layer metadata is persisted so reads can rebuild the chain. Internal —
+  # `AshStorage.BlobIO.write/3` is the public entry.
 
   alias AshStorage.BlobIO.BlobContext
+  alias AshStorage.BlobIO.Layers
 
   alias AshStorage.BlobIO.Operation.{
     BlobDraft,
     CreateParams,
     Finalization,
+    PostCreate,
     ServiceState
   }
 
@@ -81,14 +85,15 @@ defmodule AshStorage.BlobIO.Writer do
             ash_opts: Keyword.get(opts, :ash_opts, [])
           },
           call_opts: opts,
-          service: ServiceState.new(service_mod, service_opts)
+          service: ServiceState.new(service_mod, service_opts),
+          layers: Support.layers_for(bctx, opts)
         }
         |> Support.put_service_context()
 
-      operation = put_size_attrs(operation)
-      operation = Support.put_service_context(operation)
-
-      with {:ok, service_attrs} <-
+      with {:ok, operation} <- Layers.run(operation, :write),
+           operation = put_size_attrs(operation),
+           operation = Support.put_service_context(operation),
+           {:ok, service_attrs} <-
              Support.normalize_upload(
                operation.service.mod.upload(
                  operation.draft.key,
@@ -108,18 +113,24 @@ defmodule AshStorage.BlobIO.Writer do
             service_name: operation.service.mod,
             service_opts:
               Support.persistable_service_opts(operation.service.mod, operation.service.opts),
-            metadata: operation.draft.metadata
+            metadata:
+              Support.put_layer_metadata(operation.draft.metadata, operation.layer_metadata)
           }
           |> Map.merge(operation.draft.attrs)
           |> Map.merge(service_attrs)
 
-        Ash.create(
-          blob_resource,
-          blob_attrs,
-          Keyword.merge(operation.create_params.ash_opts,
-            action: operation.create_params.action
-          )
-        )
+        with {:ok, blob} <-
+               Ash.create(
+                 blob_resource,
+                 blob_attrs,
+                 Keyword.merge(operation.create_params.ash_opts,
+                   action: operation.create_params.action
+                 )
+               ),
+             operation = put_blob(operation, blob),
+             :ok <- run_finalizations(operation) do
+          {:ok, operation.blob}
+        end
       end
     end
   end
@@ -132,5 +143,36 @@ defmodule AshStorage.BlobIO.Writer do
     }
 
     %{operation | draft: draft}
+  end
+
+  # Finalization is a first-class post-create step. Layers register a
+  # typed `Finalization` closure during `write/2`; the writer (not a second
+  # layer callback) builds the post-create context once and invokes each closure
+  # in configured write order. The first error halts and is returned; the blob
+  # row already exists, so finalizations carry an at-least-once / idempotent
+  # contract (see Operation.Finalization + the Encryption guide).
+  defp run_finalizations(%Operation{finalizations: finalizations} = operation) do
+    context = %PostCreate{
+      blob_context: operation.blob_context,
+      blob: operation.blob,
+      draft: operation.draft,
+      service: operation.service,
+      layer_metadata: operation.layer_metadata,
+      call_opts: operation.call_opts
+    }
+
+    Enum.reduce_while(finalizations, :ok, fn %Finalization{run: run}, :ok ->
+      case run.(context) do
+        :ok -> {:cont, :ok}
+        {:error, _reason} = error -> {:halt, error}
+      end
+    end)
+  end
+
+  defp put_blob(%Operation{} = operation, blob) do
+    operation
+    |> Map.put(:blob, blob)
+    |> Map.put(:blob_context, BlobContext.put_blob(operation.blob_context, blob))
+    |> Support.put_service_context()
   end
 end
