@@ -9,9 +9,10 @@ defmodule AshStorage.BlobIO.Reader do
 
   defmodule Operation do
     @moduledoc """
-    Phase-local state for a blob read.
+    Phase-local state passed through read layers.
 
-    `data` starts as raw service bytes and ends as logical bytes.
+    `data` starts as raw service bytes and should end as logical bytes. Read
+    layers run in reverse write order.
     """
 
     defstruct [
@@ -20,6 +21,8 @@ defmodule AshStorage.BlobIO.Reader do
       :key,
       :data,
       :service,
+      layer_metadata: [],
+      layers: [],
       call_opts: []
     ]
 
@@ -30,6 +33,8 @@ defmodule AshStorage.BlobIO.Reader do
             key: String.t(),
             data: binary() | nil,
             service: ServiceState.t(),
+            layer_metadata: [map()],
+            layers: [AshStorage.Layer.spec()],
             call_opts: keyword()
           }
   end

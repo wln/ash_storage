@@ -8,6 +8,7 @@ defmodule AshStorage.BlobIO.Writer do
   alias AshStorage.BlobIO.Operation.{
     BlobDraft,
     CreateParams,
+    Finalization,
     ServiceState
   }
 
@@ -16,12 +17,22 @@ defmodule AshStorage.BlobIO.Writer do
 
   defmodule Operation do
     @moduledoc """
-    Phase-local state for a blob write.
+    Phase-local state passed through write layers.
 
-    `data` carries the logical bytes, `draft` the blob row attributes to
-    persist, and `blob_context`/`call_opts` the shared operation context. The
-    writer's own plumbing — `service` (adapter binding) and `create_params`
-    (the `Ash.create` action + opts) — is framework-owned.
+    The fields fall into three groups, so a layer author can see at a glance
+    which are theirs:
+
+      * **Layer-facing** — what a `write/2` callback reads and transforms:
+        `data` (logical bytes; mutate via `Layer.data/1` + `Layer.put_data/2`),
+        `draft` (blob row attributes a layer may adjust before creation),
+        `layer_metadata` (append durable metadata via `Layer.put_metadata/3`),
+        and `finalizations` (register post-create steps via `Layer.finalize/3`).
+      * **Shared context (read-only for layers)** — `blob_context`, `call_opts`,
+        and `blob` (nil during the write phase; populated only for the
+        post-create `PostCreate` context).
+      * **Framework-owned** — the writer's own plumbing, which layers should not
+        touch: `service` (adapter binding), `create_params` (the `Ash.create`
+        action + opts), and `layers` (the chain the runner iterates).
     """
 
     defstruct [
@@ -31,6 +42,9 @@ defmodule AshStorage.BlobIO.Writer do
       :service,
       :blob,
       create_params: %CreateParams{},
+      layer_metadata: [],
+      finalizations: [],
+      layers: [],
       call_opts: []
     ]
 
@@ -42,6 +56,9 @@ defmodule AshStorage.BlobIO.Writer do
             service: ServiceState.t(),
             blob: struct() | nil,
             create_params: CreateParams.t(),
+            layer_metadata: [map()],
+            finalizations: [Finalization.t()],
+            layers: [AshStorage.Layer.spec()],
             call_opts: keyword()
           }
   end

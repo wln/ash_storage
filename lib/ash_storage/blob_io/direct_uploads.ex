@@ -10,12 +10,14 @@ defmodule AshStorage.BlobIO.DirectUploads do
 
   defmodule Operation do
     @moduledoc """
-    Phase-local state for direct-upload preparation.
+    Phase-local state passed through direct-upload layers.
 
     The operation contains the future blob attributes plus the service context
-    that will be used to request upload instructions from the adapter. The bytes
-    never pass through the server on a direct upload — they stream client →
-    service.
+    that will be used to request upload instructions from the adapter. Layers run
+    their `direct_upload/2` callback over this struct — not `write/2` — because the
+    bytes never pass through the server on a direct upload, so a byte-transforming
+    layer adjusts/persists metadata or rejects here rather than transforming. See
+    the "Direct uploads" section of the `Layers` guide.
     """
 
     defstruct [
@@ -23,6 +25,8 @@ defmodule AshStorage.BlobIO.DirectUploads do
       :draft,
       :service,
       ash_opts: [],
+      layer_metadata: [],
+      layers: [],
       call_opts: []
     ]
 
@@ -32,6 +36,8 @@ defmodule AshStorage.BlobIO.DirectUploads do
             draft: BlobDraft.t(),
             service: ServiceState.t(),
             ash_opts: keyword(),
+            layer_metadata: [map()],
+            layers: [AshStorage.Layer.spec()],
             call_opts: keyword()
           }
   end

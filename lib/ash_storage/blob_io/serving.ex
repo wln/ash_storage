@@ -14,10 +14,11 @@ defmodule AshStorage.BlobIO.Serving do
 
   defmodule Operation do
     @moduledoc """
-    Phase-local state for serving-strategy selection.
+    Phase-local state passed through serving layers.
 
-    `service.context` is rebuilt from the resolved service options so storage
-    services see the final service options.
+    Layers may adjust `key`, `call_opts`, `service.opts`, or set `strategy`
+    directly. `service.context` is rebuilt after layers run so storage services
+    see the final service options.
     """
 
     defstruct [
@@ -25,6 +26,9 @@ defmodule AshStorage.BlobIO.Serving do
       :blob,
       :key,
       :service,
+      :strategy,
+      layer_metadata: [],
+      layers: [],
       call_opts: []
     ]
 
@@ -34,6 +38,9 @@ defmodule AshStorage.BlobIO.Serving do
             blob: struct(),
             key: String.t(),
             service: ServiceState.t(),
+            strategy: term(),
+            layer_metadata: [map()],
+            layers: [AshStorage.Layer.spec()],
             call_opts: keyword()
           }
   end
