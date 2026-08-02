@@ -131,10 +131,12 @@ defmodule AshStorage.Service.Disk do
 
   # Storage keys arrive from untrusted callers (e.g. a public proxy route).
   # `Path.join/2` does NOT collapse `..`, so resolve the key to a guaranteed-safe
-  # relative path before any filesystem access. `Path.safe_relative/1` rejects
-  # absolute paths and any `..` that would escape, so the join stays under `root`.
+  # relative path before any filesystem access. `Path.safe_relative/2` rejects
+  # absolute paths and any `..` that would escape, AND — given `root` — evaluates
+  # symlink containment against `root` rather than the process CWD, so a symlink
+  # planted under `root` cannot redirect a read/write outside it.
   defp safe_path(root, key) do
-    case Path.safe_relative(to_string(key)) do
+    case Path.safe_relative(to_string(key), root) do
       {:ok, relative} -> {:ok, Path.join(root, relative)}
       :error -> {:error, {:unsafe_storage_key, key}}
     end
@@ -142,17 +144,35 @@ defmodule AshStorage.Service.Disk do
 
   # File operations are isolated behind safe_path/2 above; the path can no longer
   # be steered outside `root`, which is what these sobelow skips assert.
+  # Stored bytes default to owner-only permissions (files 0o600, dirs 0o700)
+  # rather than inheriting the process umask, so blobs are not world-readable on
+  # a shared host. The chmod is best-effort and applied after creation.
+  @dir_mode 0o700
+  @file_mode 0o600
+
   # sobelow_skip ["Traversal.FileModule"]
   defp write_io(path, io) do
-    path |> Path.dirname() |> File.mkdir_p!()
+    dir = Path.dirname(path)
+    File.mkdir_p!(dir)
+    _ = File.chmod(dir, @dir_mode)
 
-    case io do
-      %File.Stream{} = stream ->
-        stream |> Stream.into(File.stream!(path)) |> Stream.run()
+    result =
+      case io do
+        %File.Stream{} = stream ->
+          stream |> Stream.into(File.stream!(path)) |> Stream.run()
+          :ok
+
+        data when is_binary(data) or is_list(data) ->
+          File.write(path, data)
+      end
+
+    case result do
+      :ok ->
+        _ = File.chmod(path, @file_mode)
         :ok
 
-      data when is_binary(data) or is_list(data) ->
-        File.write(path, data)
+      other ->
+        other
     end
   end
 

@@ -95,7 +95,7 @@ defmodule AshStorage.Plug.DiskServe do
   end
 
   defp safe_join(root, key) do
-    case Path.safe_relative(key) do
+    case Path.safe_relative(key, root) do
       {:ok, relative} -> Path.join(root, relative)
       :error -> nil
     end
