@@ -155,10 +155,10 @@ defmodule AshStorage.Plug.Proxy do
 
   # A blob-aware / encryption-aware route that configures no access is a
   # foot-gun — it serves protected blobs through an unsigned public proxy. The
-  # check is governed by an Ash-style switch so applications can adopt it on
-  # their own cadence:
+  # default is fail-closed (`:require`): such a route raises at init unless it
+  # declares an access posture. Applications can relax this on their own cadence:
   #
-  #     config :ash_storage, :proxy_access_requirement, :warn  # :off | :warn | :require
+  #     config :ash_storage, :proxy_access_requirement, :require  # :off | :warn | :require
   #
   # An explicit `access:` (or a bare `:secret`), including `access: :public`,
   # always silences this — only a *defaulted* public access on a protected route
@@ -168,7 +168,7 @@ defmodule AshStorage.Plug.Proxy do
     protected_route? = not is_nil(blob_resource) or encryption_layer?(layers)
 
     if protected_route? and not access_configured? do
-      case Application.get_env(:ash_storage, :proxy_access_requirement, :warn) do
+      case Application.get_env(:ash_storage, :proxy_access_requirement, :require) do
         :off ->
           :ok
 

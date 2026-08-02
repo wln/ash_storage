@@ -52,6 +52,14 @@ defmodule AshStorage.Plug.ProxyTest do
       :ok
     end
 
+    test "defaults to :require — a blob-aware route without :access raises" do
+      Application.delete_env(:ash_storage, :proxy_access_requirement)
+
+      assert_raise ArgumentError, ~r/requires an explicit/, fn ->
+        Proxy.init(resource: LayeredPost, attachment: :cover_image)
+      end
+    end
+
     test ":require raises for a blob-aware route configured without :access" do
       Application.put_env(:ash_storage, :proxy_access_requirement, :require)
 
@@ -148,7 +156,7 @@ defmodule AshStorage.Plug.ProxyTest do
       assert {:ok, "layered proxy content-resource-cover"} =
                Service.Test.download(blob.key, [])
 
-      plug_opts = Proxy.init(resource: LayeredPost, attachment: :cover_image)
+      plug_opts = Proxy.init(resource: LayeredPost, attachment: :cover_image, access: :public)
       conn = conn(:get, "/#{blob.key}") |> Proxy.call(plug_opts)
 
       assert conn.status == 200
@@ -184,7 +192,7 @@ defmodule AshStorage.Plug.ProxyTest do
           content_type: "application/octet-stream"
         )
 
-      plug_opts = Proxy.init(resource: LayeredPost, attachment: :cover_image)
+      plug_opts = Proxy.init(resource: LayeredPost, attachment: :cover_image, access: :public)
       conn = conn(:get, "/#{blob.key}") |> Proxy.call(plug_opts)
 
       assert conn.status == 200
@@ -223,7 +231,7 @@ defmodule AshStorage.Plug.ProxyTest do
           content_type: "application/octet-stream"
         )
 
-      plug_opts = Proxy.init(resource: LayeredPost, attachment: :cover_image)
+      plug_opts = Proxy.init(resource: LayeredPost, attachment: :cover_image, access: :public)
 
       conn =
         conn(:get, "/#{blob.key}?disposition=inline&filename=#{URI.encode_www_form(filename)}")
