@@ -17,6 +17,7 @@ defmodule AshStorage.Operations do
 
   alias AshStorage.AnalyzerMetadata
   alias AshStorage.BlobIO
+  alias AshStorage.BlobIO.Support, as: BlobIOSupport
   alias AshStorage.Info
   alias AshStorage.Service.Context
 
@@ -363,7 +364,11 @@ defmodule AshStorage.Operations do
         {:ok, build_analyzer_blob_context(blob, analyzer_module, opts, resource, attachment_def)}
 
       :missing ->
-        {:ok, build_analyzer_blob_context(blob, analyzer_module, opts)}
+        if BlobIOSupport.layer_metadata_from_blob(blob) == [] do
+          {:ok, build_analyzer_blob_context(blob, analyzer_module, opts)}
+        else
+          {:error, {:missing_blob_io_context, :analyzer, analyzer_key}}
+        end
 
       {:error, reason} ->
         {:error, {:invalid_blob_io_context, :analyzer, analyzer_key, reason}}

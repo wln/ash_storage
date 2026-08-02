@@ -184,6 +184,76 @@ defmodule AshStorage.AnalyzerTest do
     end
   end
 
+  describe "async analyzer BlobIO context" do
+    test "uses analyzer source context to read layered blobs" do
+      post = create_layered_post!()
+
+      {:ok, %{blob: blob}} =
+        Operations.attach(post, :cover_image, "hello\nworld\n",
+          filename: "hello.txt",
+          content_type: "text/plain"
+        )
+
+      assert {:ok, "hello\nworld\n-resource-cover"} =
+               AshStorage.Service.Test.download(blob.key, [])
+
+      {:ok, attachment_def} =
+        AshStorage.Info.attachment(AshStorage.Test.LayeredPost, :cover_image)
+
+      analyzer_key = to_string(AshStorage.Test.TestAnalyzer)
+
+      {:ok, blob} =
+        Ash.update(
+          blob,
+          %{
+            analyzers: %{
+              analyzer_key => %{
+                "status" => "pending",
+                "opts" => %{},
+                "source" =>
+                  AshStorage.AnalyzerMetadata.source(
+                    AshStorage.Test.LayeredPost,
+                    attachment_def
+                  )
+              }
+            }
+          },
+          action: :update_metadata
+        )
+
+      {:ok, updated_blob} = Operations.run_analyzer(blob, AshStorage.Test.TestAnalyzer)
+
+      assert updated_blob.metadata["line_count"] == 3
+      assert updated_blob.analyzers[analyzer_key]["status"] == "complete"
+    end
+
+    test "returns a context error for layered blobs with old analyzer metadata" do
+      post = create_layered_post!()
+
+      {:ok, %{blob: blob}} =
+        Operations.attach(post, :cover_image, "hello",
+          filename: "hello.txt",
+          content_type: "text/plain"
+        )
+
+      analyzer_key = to_string(AshStorage.Test.TestAnalyzer)
+
+      {:ok, blob} =
+        Ash.update(
+          blob,
+          %{
+            analyzers: %{
+              analyzer_key => %{"status" => "pending", "opts" => %{}}
+            }
+          },
+          action: :update_metadata
+        )
+
+      assert {:error, {:missing_blob_io_context, :analyzer, ^analyzer_key}} =
+               Operations.run_analyzer(blob, AshStorage.Test.TestAnalyzer)
+    end
+  end
+
   describe "write_attributes" do
     test "writes analyzer results to parent record attributes" do
       post = create_post!()
