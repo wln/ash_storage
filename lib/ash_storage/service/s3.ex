@@ -13,12 +13,13 @@ if Code.ensure_loaded?(ReqS3) do
             region: "us-east-1"}
         end
 
-    Credentials are resolved at request time from ambient sources such as the
-    `AWS_ACCESS_KEY_ID` / `AWS_SECRET_ACCESS_KEY` environment variables. They can
-    also be passed inline as `:access_key_id` / `:secret_access_key`, but inline
-    credentials are never persisted on the blob row, so asynchronous operations
-    that rebuild the service from the row (purge, variants, analyzers) must be
-    able to resolve them ambiently too.
+    Credentials are resolved at request time, from `:access_key_id` /
+    `:secret_access_key` in the service options or from the `AWS_ACCESS_KEY_ID` /
+    `AWS_SECRET_ACCESS_KEY` environment variables. Inline credentials are never
+    persisted on the blob row, so anything that rebuilds the service purely from
+    `blob.parsed_service_opts` — `Operations.download/2` (and with it analyzers
+    and variant generation), blob-level purges, and dependent-attachment
+    purges — must find them in the environment.
 
     ## Options
 
