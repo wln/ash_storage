@@ -2,6 +2,8 @@ defmodule AshStorage.Service.S3Test do
   # Mutates application config; keep it out of the async pool.
   use ExUnit.Case, async: false
 
+  import ExUnit.CaptureLog
+
   alias AshStorage.Operations
   alias AshStorage.Service.S3
   alias AshStorage.Test.{Blob, ConfigurablePost}
@@ -20,7 +22,13 @@ defmodule AshStorage.Service.S3Test do
       ]
     )
 
-    on_exit(fn -> Application.delete_env(:ash_storage, ConfigurablePost) end)
+    # The inline-only warning has its own describe; keep it quiet elsewhere.
+    :persistent_term.put({S3, :inline_only_warned}, true)
+
+    on_exit(fn ->
+      Application.delete_env(:ash_storage, ConfigurablePost)
+      :persistent_term.erase({S3, :inline_only_warned})
+    end)
   end
 
   describe "credentials never round-trip onto the blob row" do
@@ -55,4 +63,43 @@ defmodule AshStorage.Service.S3Test do
       assert persisted == %{"bucket" => "test-bucket", "region" => "us-east-1"}
     end
   end
+
+  describe "inline-only credentials warn once" do
+    setup do
+      saved = {System.get_env("AWS_ACCESS_KEY_ID"), System.get_env("AWS_SECRET_ACCESS_KEY")}
+      System.delete_env("AWS_ACCESS_KEY_ID")
+      System.delete_env("AWS_SECRET_ACCESS_KEY")
+      :persistent_term.erase({S3, :inline_only_warned})
+
+      on_exit(fn ->
+        {id, secret} = saved
+        restore_env("AWS_ACCESS_KEY_ID", id)
+        restore_env("AWS_SECRET_ACCESS_KEY", secret)
+      end)
+    end
+
+    test "warns once when the AWS_* variables are unset" do
+      assert capture_log(&prepare!/0) =~ "AWS_ACCESS_KEY_ID / AWS_SECRET_ACCESS_KEY are not set"
+      assert capture_log(&prepare!/0) == ""
+    end
+
+    test "stays quiet when the AWS_* variables are set" do
+      System.put_env("AWS_ACCESS_KEY_ID", "AKIAENVEXAMPLE")
+      System.put_env("AWS_SECRET_ACCESS_KEY", "env-secret")
+
+      assert capture_log(&prepare!/0) == ""
+    end
+  end
+
+  defp prepare! do
+    assert {:ok, _} =
+             Operations.prepare_direct_upload(ConfigurablePost, :avatar,
+               filename: "photo.jpg",
+               content_type: "image/jpeg",
+               byte_size: 123
+             )
+  end
+
+  defp restore_env(name, nil), do: System.delete_env(name)
+  defp restore_env(name, value), do: System.put_env(name, value)
 end

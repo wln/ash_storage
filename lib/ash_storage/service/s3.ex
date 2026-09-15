@@ -36,6 +36,8 @@ if Code.ensure_loaded?(ReqS3) do
 
     @behaviour AshStorage.Service
 
+    require Logger
+
     @impl true
     def service_opts_fields do
       # Persisted on the blob row, so no credentials here: `:access_key_id` and
@@ -139,6 +141,8 @@ if Code.ensure_loaded?(ReqS3) do
       full_key = prefixed_key(key, ctx)
 
       if Keyword.get(opts, :presigned, false) do
+        warn_if_inline_only(opts)
+
         presign_opts =
           [
             bucket: Keyword.fetch!(opts, :bucket),
@@ -184,6 +188,8 @@ if Code.ensure_loaded?(ReqS3) do
       full_key = prefixed_key(key, ctx)
       method = Keyword.get(opts, :direct_upload_method, :put)
 
+      warn_if_inline_only(opts)
+
       presign_base =
         [
           bucket: Keyword.fetch!(opts, :bucket),
@@ -220,6 +226,7 @@ if Code.ensure_loaded?(ReqS3) do
 
     defp req(%AshStorage.Service.Context{} = ctx) do
       opts = ctx.service_opts
+      warn_if_inline_only(opts)
       bucket = Keyword.fetch!(opts, :bucket)
       endpoint = endpoint_url(opts)
 
@@ -266,6 +273,36 @@ if Code.ensure_loaded?(ReqS3) do
 
     defp resolve_credential(opts, key, env_var) do
       Keyword.get(opts, key) || System.get_env(env_var)
+    end
+
+    # Inline keys reach request-time paths but are not persisted, so anything
+    # rebuilt from a blob row can only find credentials in the environment.
+    # One warning, at the first request that uses inline keys while the
+    # environment pair is unset. Goes when credentials can come from a
+    # provider instead of the row.
+    defp warn_if_inline_only(opts) do
+      warned_key = {__MODULE__, :inline_only_warned}
+
+      inline? =
+        Keyword.has_key?(opts, :access_key_id) or Keyword.has_key?(opts, :secret_access_key)
+
+      env_pair? =
+        not is_nil(System.get_env("AWS_ACCESS_KEY_ID")) and
+          not is_nil(System.get_env("AWS_SECRET_ACCESS_KEY"))
+
+      if inline? and not env_pair? and not :persistent_term.get(warned_key, false) do
+        :persistent_term.put(warned_key, true)
+
+        Logger.warning(
+          "AshStorage.Service.S3: inline :access_key_id / :secret_access_key are not " <>
+            "persisted on blob rows, and AWS_ACCESS_KEY_ID / AWS_SECRET_ACCESS_KEY are not set. " <>
+            "Operations that start from a blob row (Operations.download/2, analyzers, variants, " <>
+            "blob-level and dependent-attachment purges) will not be able to authenticate; " <>
+            "set the environment variables."
+        )
+      end
+
+      :ok
     end
 
     defp maybe_put(keyword, _key, nil), do: keyword
